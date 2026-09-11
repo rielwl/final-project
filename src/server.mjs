@@ -5,6 +5,15 @@ import { ROOT, loadRepos, loadUsers, findUser, allowedRepoIds } from "./config.m
 import { buildIndex, loadIndex, redactSecrets } from "./indexer.mjs";
 import { prepare, search } from "./retriever.mjs";
 import { buildContext, streamAnswer, MODEL } from "./llm.mjs";
+import {
+  readRepos,
+  readUsers,
+  validateRepos,
+  validateUsers,
+  saveRepos,
+  saveUsers,
+  resolveRepoPath,
+} from "./admin-store.mjs";
 
 try {
   process.loadEnvFile(path.join(ROOT, ".env"));
@@ -26,7 +35,14 @@ try {
 }
 let prepared = prepare(index);
 
-const repoById = new Map(loadRepos().map((r) => [r.id, r]));
+// Rebuilt whenever the admin dashboard changes the project list.
+let repoById = new Map(loadRepos().map((r) => [r.id, r]));
+
+function refreshFromDisk() {
+  repoById = new Map(loadRepos().map((r) => [r.id, r]));
+  index = buildIndex({ quiet: true });
+  prepared = prepare(index);
+}
 
 function scopeFor(userId) {
   const user = findUser(userId);
@@ -62,9 +78,83 @@ app.get("/api/context", (req, res) => {
 });
 
 app.post("/api/reindex", (_req, res) => {
-  index = buildIndex({ quiet: true });
-  prepared = prepare(index);
+  refreshFromDisk();
   res.json({ ok: true, generatedAt: index.generatedAt, files: index.files.length });
+});
+
+/* --------------------------- admin API --------------------------- */
+
+/**
+ * The dashboard edits config/repos.json and config/users.json. It is
+ * unauthenticated unless ADMIN_TOKEN is set in .env, in which case every admin
+ * call must send it as `x-admin-token`. The assistant binds to localhost, so an
+ * unset token means "trusted local operator", which is what a v1 demo wants.
+ */
+function requireAdmin(req, res, next) {
+  const expected = process.env.ADMIN_TOKEN;
+  if (!expected) return next();
+  if (req.header("x-admin-token") === expected) return next();
+  return res.status(401).json({ error: "admin_token_required" });
+}
+
+/** Per-project state the dashboard shows next to each row. */
+function repoStatus(repo) {
+  const indexed = index.repos.find((r) => r.id === repo.id);
+  const absolute = resolveRepoPath(repo.path);
+  return {
+    absolutePath: absolute,
+    exists: fs.existsSync(absolute),
+    indexedFiles: indexed?.indexedFiles ?? 0,
+    maskedValues: indexed?.redactions ?? 0,
+    excluded: index.skipped.filter(
+      (s) => s.repo === repo.id && s.reason.startsWith("secrets policy"),
+    ),
+  };
+}
+
+app.get("/api/admin/config", requireAdmin, (_req, res) => {
+  const repos = readRepos();
+  res.json({
+    protected: Boolean(process.env.ADMIN_TOKEN),
+    generatedAt: index.generatedAt,
+    repos,
+    users: readUsers().users,
+    status: Object.fromEntries(repos.map((repo) => [repo.id, repoStatus(repo)])),
+  });
+});
+
+app.put("/api/admin/repos", requireAdmin, (req, res) => {
+  const repos = req.body?.repos;
+  const problems = validateRepos(repos);
+  if (problems.length > 0) return res.status(400).json({ problems });
+
+  const saved = saveRepos(repos);
+
+  // Dropping a project must also drop it from everyone's access list, or a
+  // stale id would quietly grant nothing and confuse the next editor.
+  const known = new Set(saved.map((r) => r.id));
+  const users = readUsers().users.map((user) => ({
+    ...user,
+    repos: user.repos.filter((id) => known.has(id)),
+  }));
+  saveUsers(users);
+
+  refreshFromDisk();
+  res.json({
+    ok: true,
+    repos: saved,
+    users,
+    status: Object.fromEntries(saved.map((repo) => [repo.id, repoStatus(repo)])),
+    generatedAt: index.generatedAt,
+  });
+});
+
+app.put("/api/admin/users", requireAdmin, (req, res) => {
+  const users = req.body?.users;
+  const problems = validateUsers(users, readRepos().map((r) => r.id));
+  if (problems.length > 0) return res.status(400).json({ problems });
+
+  res.json({ ok: true, users: saveUsers(users) });
 });
 
 /** Streaming answer over Server-Sent Events. */

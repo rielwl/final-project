@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ROOT, INDEX_PATH, loadRepos } from "./config.mjs";
+import { resolveRepoPath } from "./admin-store.mjs";
 import { extractSetupFacts } from "./setup-extractor.mjs";
 
 /* ------------------------------------------------------------------ *
@@ -152,7 +153,7 @@ export function buildIndex({ quiet = false } = {}) {
   };
 
   for (const repo of repos) {
-    const repoRoot = path.join(ROOT, repo.path);
+    const repoRoot = resolveRepoPath(repo.path);
     if (!fs.existsSync(repoRoot)) {
       throw new Error(`Configured repo path does not exist: ${repo.path}`);
     }

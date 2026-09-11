@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Onboarding Assistant — Admin</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="dot"></span>
+        <div>
+          <h1>Admin — projects and people</h1>
+          <p id="indexLine">Loading configuration…</p>
+        </div>
+      </div>
+      <a class="topbar-link" href="/">← Back to the assistant</a>
+    </header>
+
+    <main class="admin">
+      <p id="authNote" class="banner" hidden></p>
+
+      <section class="admin-section">
+        <div class="section-head">
+          <div>
+            <h2>Projects</h2>
+            <p>
+              The repositories the assistant indexes. A path may be relative to
+              this project or an absolute path to a clone anywhere on disk.
+              Saving re-indexes immediately.
+            </p>
+          </div>
+          <button id="addRepo" class="ghost" type="button">Add project</button>
+        </div>
+        <div id="repoList" class="stack"></div>
+        <div class="actions">
+          <button id="saveRepos" type="button">Save projects and re-index</button>
+          <span id="repoStatus" class="action-status"></span>
+        </div>
+        <ul id="repoProblems" class="problems" hidden></ul>
+      </section>
+
+      <section class="admin-section">
+        <div class="section-head">
+          <div>
+            <h2>People</h2>
+            <p>
+              Who may use the assistant, and which projects each of them can see.
+              Answers, citations and the file viewer are all restricted to the
+              projects ticked here.
+            </p>
+          </div>
+          <button id="addUser" class="ghost" type="button">Add person</button>
+        </div>
+        <div id="userList" class="stack"></div>
+        <div class="actions">
+          <button id="saveUsers" type="button">Save people</button>
+          <span id="userStatus" class="action-status"></span>
+        </div>
+        <ul id="userProblems" class="problems" hidden></ul>
+      </section>
+    </main>
+
+    <script src="admin.js"></script>
+  </body>
+</html>

@@ -39,6 +39,29 @@ missing.
    question. The answer is built only from the two repositories that user can
    read, and says so.
 
+## Admin dashboard
+
+`http://localhost:3000/admin.html` (linked from the top right of the assistant)
+configures the two things that change as a team onboards:
+
+- **Projects.** The repositories to index: id, path, repository link, language
+  and summary. A path may be relative to this project or an absolute path to a
+  clone anywhere on disk. Each row shows how many files are indexed, how many
+  credential-shaped values were masked, and what the secrets policy excluded.
+  Saving re-indexes immediately, so the next question uses the new set.
+- **People.** Who may use the assistant and, per person, which projects they can
+  read. Those tick boxes are the access boundary: retrieval, citations and the
+  file viewer all honour them.
+
+Edits are validated before anything is written, so a rejected save leaves both
+files exactly as they were. Removing a project also removes it from every
+person's access list rather than leaving a dangling id. Everything is stored in
+`config/repos.json` and `config/users.json`, which remain hand-editable.
+
+The dashboard is unauthenticated for local use. Set `ADMIN_TOKEN` in `.env` to
+require an `x-admin-token` header on every admin call before exposing the
+server beyond localhost.
+
 ## What is in the box
 
 | Path | Purpose |
@@ -50,6 +73,8 @@ missing.
 | `src/llm.mjs` | Model call: system prompt, context assembly, streaming |
 | `src/server.mjs` | Express API: `/api/context`, `/api/ask` (SSE), `/api/file`, `/api/reindex` |
 | `public/` | Single-screen UI: composer, streaming answer, citation chips, file viewer |
+| `public/admin.html` | Admin dashboard: configure projects and people |
+| `src/admin-store.mjs` | Validates and writes the two configuration files |
 | `config/repos.json` | The pilot repositories. Point `path` at real local clones to index those instead |
 | `config/users.json` | Demo access-control table: which user may read which repo |
 
