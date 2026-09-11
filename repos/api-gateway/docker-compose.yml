@@ -1,0 +1,17 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api-gateway:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      VALIDATION_SERVICE_URL: "http://transaction-validation-service:8081"
+      LEDGER_SERVICE_URL: "http://ledger-service:8082"
+      REDIS_URL: "redis://redis:6379"
+    depends_on:
+      - redis

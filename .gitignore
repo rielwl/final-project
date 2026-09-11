@@ -1,0 +1,9 @@
+node_modules/
+.env
+.dev.vars
+.DS_Store
+data/index.json
+
+# Exception: the deliberately fake .env fixtures inside the sample repos are
+# committed so a fresh clone can see the secrets policy exclude them.
+!repos/*/.env

@@ -1,0 +1,23 @@
+{
+  "comment": "Mirrors repository read permissions. The assistant only ever answers from repos listed for the signed-in user.",
+  "users": [
+    {
+      "id": "new-engineer",
+      "name": "Priya (new engineer, Payments squad)",
+      "email": "new.engineer@acme.example",
+      "repos": ["api-gateway", "transaction-validation-service", "ledger-service"]
+    },
+    {
+      "id": "gateway-only",
+      "name": "Sam (new engineer, Edge squad)",
+      "email": "sam@acme.example",
+      "repos": ["api-gateway"]
+    },
+    {
+      "id": "contractor",
+      "name": "Devi (contractor, read-only on gateway + ledger)",
+      "email": "devi@vendor.example",
+      "repos": ["api-gateway", "ledger-service"]
+    }
+  ]
+}

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Onboarding Assistant</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="dot"></span>
+        <div>
+          <h1>Onboarding Assistant</h1>
+          <p id="indexLine">Loading index…</p>
+        </div>
+      </div>
+      <label class="user-switch">
+        <span>Signed in as</span>
+        <select id="userSelect"></select>
+      </label>
+    </header>
+
+    <main>
+      <section id="intro" class="intro">
+        <h2>Find where the logic lives, and how to run it.</h2>
+        <p class="lede">
+          Ask in plain English. Answers come only from the pilot repositories you
+          are authorised to read, with file paths, line numbers, and setup
+          commands taken from the repos themselves.
+        </p>
+
+        <div id="repoCards" class="repo-cards"></div>
+
+        <div class="starters">
+          <p class="starters-title">Start with</p>
+          <div id="starterList" class="starter-list"></div>
+        </div>
+      </section>
+
+      <section id="thread" class="thread" hidden></section>
+    </main>
+
+    <form id="composer" class="composer">
+      <textarea
+        id="question"
+        rows="2"
+        placeholder="Ask about the codebase, e.g. where a rule is enforced or how to run the tests"
+        autocomplete="off"
+      ></textarea>
+      <button id="askButton" type="submit">Ask</button>
+    </form>
+
+    <div id="viewer" class="viewer" hidden>
+      <div class="viewer-panel">
+        <div class="viewer-head">
+          <div>
+            <strong id="viewerPath"></strong>
+            <span id="viewerMeta"></span>
+          </div>
+          <div class="viewer-actions">
+            <a id="viewerRepoLink" href="#" target="_blank" rel="noreferrer">Open in repository ↗</a>
+            <button id="viewerClose" type="button" aria-label="Close">✕</button>
+          </div>
+        </div>
+        <pre id="viewerBody" class="viewer-body"></pre>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

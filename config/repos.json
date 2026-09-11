@@ -1,0 +1,28 @@
+{
+  "repos": [
+    {
+      "id": "api-gateway",
+      "name": "api-gateway",
+      "path": "repos/api-gateway",
+      "url": "https://github.com/acme-bank/api-gateway/blob/main",
+      "language": "JavaScript (Node 20)",
+      "summary": "Public edge service. AuthN, structural payload validation, fan-out to internal services."
+    },
+    {
+      "id": "transaction-validation-service",
+      "name": "transaction-validation-service",
+      "path": "repos/transaction-validation-service",
+      "url": "https://github.com/acme-bank/transaction-validation-service/blob/main",
+      "language": "Python 3.11 (FastAPI)",
+      "summary": "Authoritative owner of payment policy: limits, sanctions, currency rules."
+    },
+    {
+      "id": "ledger-service",
+      "name": "ledger-service",
+      "path": "repos/ledger-service",
+      "url": "https://github.com/acme-bank/ledger-service/blob/main",
+      "language": "Go 1.22",
+      "summary": "Double-entry ledger. Balances, postings, idempotency guarantees."
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "requestTimeoutMs": 2500,
+  "validationServiceTimeoutMs": 1200,
+  "rateLimit": { "windowSeconds": 60, "maxRequests": 300 },
+  "retry": { "attempts": 2, "backoffMs": 120 }
+}

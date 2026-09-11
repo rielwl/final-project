@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: validation
+      POSTGRES_PASSWORD: validation
+      POSTGRES_DB: validation
+    ports:
+      - "5432:5432"
+
+  transaction-validation-service:
+    build: .
+    ports:
+      - "8081:8081"
+    environment:
+      DATABASE_URL: "postgresql://validation:validation@postgres:5432/validation"
+      LEDGER_SERVICE_URL: "http://ledger-service:8082"
+    depends_on:
+      - postgres
