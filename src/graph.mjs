@@ -35,6 +35,9 @@ const CALL_PATH = /\/v1\/[A-Za-z0-9/_{}$.-]*/g;
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"]);
 
+/** A `clients/` directory or a `…Client.ext` file: something whose job is calling out. */
+const CLIENT_FILE = /(?:^|\/)clients?\//i;
+
 function citation(chunkPath, line) {
   return `${chunkPath}:${line}`;
 }
@@ -70,76 +73,123 @@ function eachLine(chunks, visit) {
  * compose port mapping on the compose service whose name matches the repo id.
  */
 function buildPortMap(byRepo) {
-  const portToRepo = new Map();
+  // port -> the repos claiming it. Only unanimous claims survive.
+  const claims = new Map();
+  const claim = (port, repoId) => {
+    if (!claims.has(port)) claims.set(port, new Set());
+    claims.get(port).add(repoId);
+  };
 
   for (const [repoId, chunks] of byRepo) {
     let inOwnService = false;
-    eachLine(chunks, (line, filePath) => {
-      const own = OWN_PORT.exec(line);
-      if (own) {
-        portToRepo.set(own[1], repoId);
-        return;
-      }
-      if (!/docker-compose\.ya?ml$/.test(filePath)) return;
 
-      // Track whether we are inside the compose service that *is* this repo,
-      // so redis/postgres port mappings are not mistaken for the repo's own.
-      const service = /^ {2}([A-Za-z0-9_.-]+):\s*$/.exec(line);
-      if (service) {
-        inOwnService = service[1] === repoId;
+    eachLine(chunks, (line, filePath) => {
+      if (/docker-compose\.ya?ml$/.test(filePath)) {
+        // Track whether we are inside the compose service that *is* this repo.
+        // A `ports:` or `PORT` under redis or postgres — or under a sibling
+        // service pulled as an image — is not this repo's own port.
+        const service = /^ {2}([A-Za-z0-9_.-]+):\s*$/.exec(line);
+        if (service) {
+          inOwnService = service[1] === repoId;
+          return;
+        }
+        if (!inOwnService) return;
+
+        const mapped = COMPOSE_PORT.exec(line);
+        if (mapped) {
+          claim(mapped[1], repoId);
+          return;
+        }
+        const own = OWN_PORT.exec(line);
+        if (own) claim(own[1], repoId);
         return;
       }
-      const port = inOwnService ? COMPOSE_PORT.exec(line) : null;
-      if (port) portToRepo.set(port[1], repoId);
+
+      // A repo's own .env.example is the repo talking about itself.
+      if (/^\.env\.(example|sample|template)$/.test(filePath)) {
+        const own = OWN_PORT.exec(line);
+        if (own) claim(own[1], repoId);
+      }
     });
   }
 
+  // A port two repos both claim resolves to neither: several services default
+  // to :8080 locally, and inventing an edge to whichever was indexed last would
+  // corrupt the reading order that the onboarding path is built on.
+  const portToRepo = new Map();
+  for (const [port, repos] of claims) {
+    if (repos.size === 1) portToRepo.set(port, [...repos][0]);
+  }
   return portToRepo;
 }
 
-/** Compose services that run a prebuilt image are infrastructure, not source. */
-function collectInfra(byRepo) {
+/**
+ * Compose services that run a prebuilt image are infrastructure, not source.
+ *
+ * Keyed per repository, never by bare service name: two repos each running a
+ * compose service called `postgres` have two different databases, on different
+ * ports with different contents. Merging them would tell a new engineer they
+ * share one, and would attribute one repo's `file:line` to the other.
+ */
+function collectInfra(byRepo, repoIds) {
   const infra = new Map();
+  const keyFor = (repoId, name) => `${repoId}::${name}`;
 
   for (const [repoId, chunks] of byRepo) {
     let current = null;
-    let dependsOn = false;
+    let dependsOnIndent = null;
 
     eachLine(chunks, (line, filePath, lineNo) => {
       if (!/docker-compose\.ya?ml$/.test(filePath)) return;
+      if (line.trim() === "") return;
+
+      const indent = line.length - line.trimStart().length;
+
+      // Leave the depends_on block as soon as indentation returns to its level
+      // or shallower, then let the line be reconsidered as a service or key.
+      if (dependsOnIndent !== null && indent <= dependsOnIndent) {
+        dependsOnIndent = null;
+      }
 
       const service = /^ {2}([A-Za-z0-9_.-]+):\s*$/.exec(line);
       if (service) {
         current = service[1];
-        dependsOn = false;
+        dependsOnIndent = null;
         return;
       }
 
       const image = /^\s+image:\s*(.+?)\s*$/.exec(line);
-      if (image && current && current !== repoId) {
-        const existing = infra.get(current) ?? { id: current, image: image[1], usedBy: [], source: null };
+      // A compose service named after one of our repositories is that service,
+      // not infrastructure, even when this stack pulls it as a prebuilt image.
+      // Recording it here would smuggle it past the access filter as an
+      // "infra" node, so it is skipped entirely.
+      if (image && current && current !== repoId && !repoIds.has(current)) {
+        const key = keyFor(repoId, current);
+        const existing = infra.get(key) ?? { key, id: current, repo: repoId, image: image[1], source: null };
         existing.image = image[1];
         existing.source ??= citation(filePath, lineNo);
-        infra.set(current, existing);
+        infra.set(key, existing);
         return;
       }
 
       if (/^\s+depends_on:\s*$/.test(line)) {
-        dependsOn = true;
+        dependsOnIndent = indent;
         return;
       }
-      if (dependsOn) {
-        const dep = /^\s+-\s*([A-Za-z0-9_.-]+)\s*$/.exec(line);
-        if (dep) {
-          const entry = infra.get(dep[1]) ?? { id: dep[1], image: null, usedBy: [], source: null };
-          if (!entry.usedBy.includes(repoId)) {
-            entry.usedBy.push(repoId);
-            entry.dependsOnSource ??= citation(filePath, lineNo);
-          }
-          infra.set(dep[1], entry);
-          return;
+
+      if (dependsOnIndent !== null) {
+        // Both spellings: the short `- postgres` list and the long
+        // `postgres:` / `condition: service_healthy` mapping form.
+        const dep =
+          /^\s+-\s*([A-Za-z0-9_.-]+)\s*$/.exec(line) ?? /^\s+([A-Za-z0-9_.-]+):\s*$/.exec(line);
+        if (dep && dep[1] !== "condition") {
+          const name = dep[1];
+          if (repoIds.has(name)) return; // a sibling service, not infrastructure
+          const key = keyFor(repoId, name);
+          const entry = infra.get(key) ?? { key, id: name, repo: repoId, image: null, source: null };
+          entry.dependsOnSource ??= citation(filePath, lineNo);
+          infra.set(key, entry);
         }
-        if (/^\s{0,4}\S/.test(line)) dependsOn = false;
       }
     });
   }
@@ -244,9 +294,11 @@ function collectOutbound(repoId, chunks, repoIds, portToRepo, ownEndpoints) {
  * A call is attributed to the nearest preceding URL literal in the same file.
  * When the file holds no URL literal at all — a client class that takes its
  * base URL as a constructor argument, as `app/clients/ledger.py` does — the
- * call is attributed to the repo's target only if there is exactly one service
- * it could mean. Anything more ambiguous is dropped rather than guessed at,
- * because a wrong edge label is worse than a missing one.
+ * call is attributed to the repo's target only if the file is itself a client
+ * and there is exactly one service it could mean. Anything more ambiguous is
+ * dropped rather than guessed at: a `/v1/...` string in a rules or config file
+ * has no bearing on who is called, and labelling an edge with it would hand
+ * the model a fabricated endpoint carrying a real-looking citation.
  */
 function attributeCalls(refs, calls) {
   const byFile = new Map();
@@ -268,7 +320,7 @@ function attributeCalls(refs, calls) {
         .filter((ref) => ref.line <= call.line)
         .sort((a, b) => b.line - a.line)[0];
       target = preceding?.target ?? (candidates.length === 1 ? candidates[0].target : null);
-    } else {
+    } else if (CLIENT_FILE.test(call.file)) {
       target = soleTarget;
     }
     if (!target) continue;
@@ -354,13 +406,20 @@ export function buildGraph(index) {
         source: citation(ref.file, ref.line),
         value: `${ref.host}${ref.port ? `:${ref.port}` : ""}`,
       });
-      if (ref.kind === "external" && !external.has(ref.target)) {
-        external.set(ref.target, {
+      if (ref.kind === "external") {
+        // One node per host, but every referencing repo keeps its own citation,
+        // so scoping can drop the ones the user may not read instead of
+        // shipping a file path out of an unauthorised repository.
+        const entry = external.get(ref.target) ?? {
           id: ref.target,
           host: ref.host,
           port: ref.port,
-          source: citation(ref.file, ref.line),
-        });
+          refs: [],
+        };
+        if (!entry.refs.some((r) => r.repo === repo.id)) {
+          entry.refs.push({ repo: repo.id, source: citation(ref.file, ref.line) });
+        }
+        external.set(ref.target, entry);
       }
     }
 
@@ -377,17 +436,17 @@ export function buildGraph(index) {
     }
   }
 
-  const infra = collectInfra(byRepo);
+  const infra = collectInfra(byRepo, repoIds);
   for (const entry of infra) {
-    for (const repoId of entry.usedBy) {
-      edges.push({
-        from: repoId,
-        to: entry.id,
-        kind: "infra",
-        calls: [],
-        evidence: [{ source: entry.dependsOnSource ?? entry.source, value: entry.image ?? entry.id }],
-      });
-    }
+    edges.push({
+      from: entry.repo,
+      // The repo-scoped key, so two services each depending on their own
+      // postgres get two nodes and two correctly-attributed citations.
+      to: entry.key,
+      kind: "infra",
+      calls: [],
+      evidence: [{ source: entry.dependsOnSource ?? entry.source, value: entry.image ?? entry.id }],
+    });
   }
 
   const serviceIds = services.map((s) => s.id);
@@ -409,20 +468,34 @@ export function buildGraph(index) {
 export function scopeGraph(graph, allowedRepoIds) {
   const allowed = new Set(allowedRepoIds);
   const services = graph.services.filter((s) => allowed.has(s.id));
-  const edges = graph.edges.filter(
-    (e) => allowed.has(e.from) && (allowed.has(e.to) || e.kind !== "http"),
-  );
+
+  // Infrastructure is owned by exactly one repo, so it is filtered by that
+  // owner — not merely by whether some authorised repo happens to use it.
+  const infra = graph.infra.filter((i) => allowed.has(i.repo));
+  const infraKeys = new Set(infra.map((i) => i.key));
+
+  const edges = graph.edges.filter((e) => {
+    if (!allowed.has(e.from)) return false;
+    if (e.kind === "http") return allowed.has(e.to);
+    if (e.kind === "infra") return infraKeys.has(e.to);
+    return true;
+  });
   const reachable = new Set(edges.map((e) => e.to));
 
   return {
     services,
-    infra: graph.infra
-      .map((i) => ({ ...i, usedBy: i.usedBy.filter((id) => allowed.has(id)) }))
-      .filter((i) => i.usedBy.length > 0),
-    external: graph.external.filter((x) => reachable.has(x.id)),
+    infra,
+    external: graph.external
+      .filter((x) => reachable.has(x.id))
+      // Keep only citations from repositories this user may read.
+      .map((x) => ({ ...x, refs: x.refs.filter((r) => allowed.has(r.repo)) }))
+      .filter((x) => x.refs.length > 0),
     edges,
     order: graph.order.filter((id) => allowed.has(id)),
-    hiddenServices: graph.services.filter((s) => !allowed.has(s.id)).map((s) => s.id),
+    // A count, never the names. Both the UI note and the prompt only need to
+    // say how many services are out of scope; shipping their ids would put
+    // repositories the user cannot read into the page payload.
+    hiddenServiceCount: graph.services.filter((s) => !allowed.has(s.id)).length,
   };
 }
 
@@ -440,9 +513,12 @@ export function describeGraph(graph) {
     }
   }
 
+  const infraName = new Map(graph.infra.map((i) => [i.key, i.id]));
+
   for (const edge of graph.edges) {
     if (edge.kind === "infra") {
-      lines.push(`- ${edge.from} depends on ${edge.to} (${edge.evidence[0]?.value ?? "infrastructure"})  [${edge.from}/${edge.evidence[0]?.source}]`);
+      const name = infraName.get(edge.to) ?? edge.to;
+      lines.push(`- ${edge.from} depends on its own ${name} (${edge.evidence[0]?.value ?? "infrastructure"})  [${edge.from}/${edge.evidence[0]?.source}]`);
       continue;
     }
     const label = edge.kind === "external" ? "calls external" : "calls";
@@ -451,9 +527,9 @@ export function describeGraph(graph) {
     lines.push(`- ${edge.from} ${label} ${edge.to}${paths ? ` via ${paths}` : ""}  [${edge.from}/${where}]`);
   }
 
-  if (graph.hiddenServices?.length > 0) {
+  if (graph.hiddenServiceCount > 0) {
     lines.push(
-      `- Not shown: ${graph.hiddenServices.length} service(s) this user may not read.`,
+      `- Not shown: ${graph.hiddenServiceCount} service(s) this user may not read.`,
     );
   }
 

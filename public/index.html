@@ -37,6 +37,20 @@
         </details>
       </section>
 
+      <!-- Outside #intro, which is hidden after the first question: this stays
+           reachable for someone who asks something before noticing it. -->
+      <div class="path-cta">
+        <button id="pathButton" class="starter primary" type="button">
+          Plan my first week ↦
+        </button>
+        <input
+          id="pathRole"
+          class="path-role"
+          placeholder="squad or role, optional — e.g. Payments squad"
+          autocomplete="off"
+        />
+      </div>
+
       <section id="intro" class="intro">
         <h2>Find where the logic lives, and how to run it.</h2>
         <p class="lede">
@@ -50,17 +64,6 @@
         <div class="starters">
           <p class="starters-title">Start with</p>
           <div id="starterList" class="starter-list"></div>
-          <div class="path-cta">
-            <button id="pathButton" class="starter primary" type="button">
-              Plan my first week ↦
-            </button>
-            <input
-              id="pathRole"
-              class="path-role"
-              placeholder="squad or role, optional — e.g. Payments squad"
-              autocomplete="off"
-            />
-          </div>
         </div>
       </section>
 

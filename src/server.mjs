@@ -38,8 +38,10 @@ app.use(express.static(path.join(ROOT, "public")));
 let index;
 try {
   index = loadIndex();
-} catch {
-  console.log("No index on disk, building one now:");
+} catch (error) {
+  // Missing, unreadable, or built by an older version of the indexer. Either
+  // way the fix is the same, and rebuilding beats serving a stale shape.
+  console.log(`${error.message} Building one now:`);
   index = buildIndex();
 }
 let prepared = prepare(index);

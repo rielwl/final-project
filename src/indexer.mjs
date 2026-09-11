@@ -81,6 +81,14 @@ const NAMED_FILES = new Set([
   ".env.sample", ".env.template",
 ]);
 
+/**
+ * Shape version of data/index.json. Bump whenever the index gains a field the
+ * server requires: the file is gitignored and only rebuilt when missing, so
+ * without this an existing checkout would load a stale index after a pull and
+ * fail on the first request.
+ */
+export const INDEX_VERSION = 2;
+
 const MAX_FILE_BYTES = 512 * 1024;
 const CHUNK_LINES = 70;
 const CHUNK_OVERLAP = 15;
@@ -145,6 +153,7 @@ function chunkFile({ repo, relative, kind, text }) {
 export function buildIndex({ quiet = false } = {}) {
   const repos = loadRepos();
   const index = {
+    version: INDEX_VERSION,
     generatedAt: new Date().toISOString(),
     repos: [],
     files: [],
@@ -223,5 +232,11 @@ export function loadIndex() {
   if (!fs.existsSync(INDEX_PATH)) {
     throw new Error("No index found. Run `npm run index` first.");
   }
-  return JSON.parse(fs.readFileSync(INDEX_PATH, "utf8"));
+  const index = JSON.parse(fs.readFileSync(INDEX_PATH, "utf8"));
+  if (index.version !== INDEX_VERSION) {
+    throw new Error(
+      `Index on disk was built by an older version (${index.version ?? "unversioned"}, expected ${INDEX_VERSION}). Rebuild it.`,
+    );
+  }
+  return index;
 }

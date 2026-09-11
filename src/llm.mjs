@@ -12,7 +12,13 @@ import { describeGraph } from "./graph.mjs";
 const LLM_BASE_URL = process.env.LLM_BASE_URL ?? "https://opencode.ai/zen/go/v1";
 const LLM_MODEL = process.env.LLM_MODEL ?? "deepseek-v4.1-flash";
 
-const LLM_TIMEOUT_MS = 120_000;
+/**
+ * Abort deadline. It arms AbortSignal.timeout on the fetch, which also errors
+ * the in-flight body read, so it has to leave room for the largest answer the
+ * output budget below allows — a first-week path over several services — not
+ * just for the ~15s a single question takes.
+ */
+const LLM_TIMEOUT_MS = 240_000;
 
 /**
  * Output budget. The configured model is a reasoning model: it streams its
@@ -155,9 +161,9 @@ export function buildPathContext({ role, results, setupFacts, repos, user, graph
   parts.push(
     `Signed in as ${user.name}. Authorised repositories: ${repos.map((r) => r.id).join(", ")}.`,
   );
-  if (graph?.hiddenServices?.length > 0) {
+  if (graph?.hiddenServiceCount > 0) {
     parts.push(
-      `This user cannot read ${graph.hiddenServices.length} further service(s) in the system. Say that the path is limited to what they can read; do not name or describe the services they cannot read.`,
+      `This user cannot read ${graph.hiddenServiceCount} further service(s) in the system. Say that the path is limited to what they can read; do not name or describe the services they cannot read.`,
     );
   }
   parts.push("");

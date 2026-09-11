@@ -223,16 +223,18 @@ function renderGraph(graph) {
   const midY = ARC_LANE + BOX_H / 2;
 
   const width = Math.max(MARGIN * 2 + order.length * boxW + (order.length - 1) * gap, 340);
+  // Infra is addressed by its repo-scoped key but labelled with its plain name,
+  // so two services each owning a `postgres` get two distinct boxes.
   const bottomNodes = [
-    ...graph.infra.map((i) => ({ id: i.id, label: i.image ?? i.id, kind: "infra" })),
-    ...graph.external.map((x) => ({ id: x.id, label: "external", kind: "external" })),
+    ...graph.infra.map((i) => ({ key: i.key, name: i.id, label: i.image ?? i.id, kind: "infra" })),
+    ...graph.external.map((x) => ({ key: x.id, name: x.id, label: "external", kind: "external" })),
   ];
   const height = bottomNodes.length > 0 ? BOTTOM_Y + BOTTOM_H + MARGIN : ARC_LANE + BOX_H + MARGIN;
 
   const bottomX = new Map();
   const slot = bottomNodes.length > 0 ? (width - MARGIN * 2) / bottomNodes.length : 0;
   bottomNodes.forEach((node, i) => {
-    bottomX.set(node.id, MARGIN + slot * i + slot / 2 - boxW / 2.6);
+    bottomX.set(node.key, MARGIN + slot * i + slot / 2 - boxW / 2.6);
   });
 
   const parts = [];
@@ -315,10 +317,10 @@ function renderGraph(graph) {
   }
 
   for (const node of bottomNodes) {
-    const x = bottomX.get(node.id);
+    const x = bottomX.get(node.key);
     parts.push(`<g class="map-node map-node-${node.kind}">
       <rect x="${x}" y="${BOTTOM_Y}" width="${boxW / 1.3}" height="${BOTTOM_H}" rx="9" />
-      <text class="map-node-id" x="${x + 12}" y="${BOTTOM_Y + 17}">${escapeHtml(node.id)}</text>
+      <text class="map-node-id" x="${x + 12}" y="${BOTTOM_Y + 17}">${escapeHtml(node.name)}</text>
       <text class="map-node-sub" x="${x + 12}" y="${BOTTOM_Y + 32}">${escapeHtml(node.label)}</text>
     </g>`);
   }
@@ -335,7 +337,7 @@ function renderGraph(graph) {
     ${parts.join("\n")}
   </svg>`;
 
-  const hidden = graph.hiddenServices?.length ?? 0;
+  const hidden = graph.hiddenServiceCount ?? 0;
   el.mapNote.textContent = hidden > 0
     ? `${graph.services.length} of ${graph.services.length + hidden} services — the rest are outside your access`
     : `${graph.services.length} services, extracted from the repositories themselves`;
@@ -534,7 +536,16 @@ async function run({ label, endpoint, body, remember, status }) {
       state.history.push({ role: "assistant", content: markdown });
     }
   } catch (error) {
-    answerEl.innerHTML = `<p class="error">${escapeHtml(error.message ?? String(error))}</p>`;
+    // Keep whatever already streamed. A timeout part-way through a long answer
+    // used to replace the whole thing with an error, throwing away the work the
+    // user was reading.
+    const message = `<p class="error">${escapeHtml(error.message ?? String(error))}</p>`;
+    if (markdown.trim()) {
+      answerEl.innerHTML = renderMarkdown(markdown);
+      answerEl.insertAdjacentHTML("beforeend", message);
+    } else {
+      answerEl.innerHTML = message;
+    }
   } finally {
     setBusy(false);
   }
