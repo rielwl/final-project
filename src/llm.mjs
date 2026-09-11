@@ -5,11 +5,17 @@ import { randomUUID } from "node:crypto";
  *
  * OpenCode Go, an OpenAI-compatible endpoint, the same provider and key as the
  * other course projects. callModel appends /chat/completions, so no trailing
- * slash on the base URL. Change these two constants (or set LLM_BASE_URL and
+ * slash on the base URL. Change these two defaults (or set LLM_BASE_URL and
  * LLM_MODEL in .env) to point at a different OpenAI-compatible provider.
  */
-const LLM_BASE_URL = process.env.LLM_BASE_URL ?? "https://opencode.ai/zen/go/v1";
-const LLM_MODEL = process.env.LLM_MODEL ?? "deepseek-v4.1-flash";
+const DEFAULT_BASE_URL = "https://opencode.ai/zen/go/v1";
+const DEFAULT_MODEL = "deepseek-v4.1-flash";
+
+// Read lazily, not at module scope: server.mjs loads .env after its imports
+// have already been evaluated, so a module-scope read would only ever see
+// shell variables and would silently ignore everything in .env.
+const baseUrl = () => process.env.LLM_BASE_URL || DEFAULT_BASE_URL;
+export const currentModel = () => process.env.LLM_MODEL || DEFAULT_MODEL;
 
 const LLM_TIMEOUT_MS = 120_000;
 const MAX_TOKENS = 4000;
@@ -18,8 +24,6 @@ const MAX_TOKENS = 4000;
 const HISTORY_ROLES = new Set(["user", "assistant"]);
 const MAX_HISTORY_MESSAGES = 6;
 const MAX_HISTORY_CHARS = 4_000;
-
-export const MODEL = LLM_MODEL;
 
 const SYSTEM_PROMPT = [
   "You are the Internal Developer Onboarding Assistant for a financial-systems engineering team.",
@@ -120,7 +124,7 @@ export async function streamAnswer({ system = SYSTEM_PROMPT, history = [], conte
   // One session id per question, as the OpenCode Go endpoint expects.
   const sessionId = randomUUID();
 
-  const response = await fetch(`${LLM_BASE_URL}/chat/completions`, {
+  const response = await fetch(`${baseUrl()}/chat/completions`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -128,7 +132,7 @@ export async function streamAnswer({ system = SYSTEM_PROMPT, history = [], conte
       "x-opencode-session": sessionId,
     },
     body: JSON.stringify({
-      model: LLM_MODEL,
+      model: currentModel(),
       messages,
       max_tokens: MAX_TOKENS,
       stream: true,
@@ -153,42 +157,54 @@ export async function streamAnswer({ system = SYSTEM_PROMPT, history = [], conte
   return await readSseStream(response.body, onText);
 }
 
-/** Read an OpenAI-style SSE completion stream. */
-async function readSseStream(body, onText) {
+/**
+ * Read an OpenAI-style SSE completion stream.
+ *
+ * Frames may be separated by LF or CRLF: a proxy that normalises line endings
+ * would otherwise make every frame unparseable, and the failure is silent -
+ * zero deltas, a clean finish, and a blank answer in the browser.
+ */
+export async function readSseStream(body, onText) {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let full = "";
+
+  const consumeFrame = (frame) => {
+    for (const line of frame.split(/\r?\n/)) {
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (payload === "" || payload === "[DONE]") continue;
+
+      let parsed;
+      try {
+        parsed = JSON.parse(payload);
+      } catch {
+        continue; // keep-alive or comment frame
+      }
+
+      const delta = parsed.choices?.[0]?.delta?.content ?? parsed.choices?.[0]?.text ?? "";
+      if (delta) {
+        full += delta;
+        onText(delta);
+      }
+    }
+  };
 
   for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
 
-    const frames = buffer.split("\n\n");
+    const frames = buffer.split(/\r?\n\r?\n/);
     buffer = frames.pop() ?? "";
-
-    for (const frame of frames) {
-      for (const line of frame.split("\n")) {
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
-        if (payload === "" || payload === "[DONE]") continue;
-
-        let parsed;
-        try {
-          parsed = JSON.parse(payload);
-        } catch {
-          continue; // keep-alive or comment frame
-        }
-
-        const delta = parsed.choices?.[0]?.delta?.content ?? parsed.choices?.[0]?.text ?? "";
-        if (delta) {
-          full += delta;
-          onText(delta);
-        }
-      }
-    }
+    for (const frame of frames) consumeFrame(frame);
   }
+
+  // A stream that ends without a trailing blank line still has one frame in
+  // hand; dropping it silently truncates the answer.
+  buffer += decoder.decode();
+  if (buffer.trim() !== "") consumeFrame(buffer);
 
   return full;
 }
