@@ -25,6 +25,18 @@
     </header>
 
     <main>
+      <section id="mapPanel" class="map-panel" hidden>
+        <div class="map-head">
+          <p class="starters-title">How these services fit together</p>
+          <span id="mapNote" class="map-note"></span>
+        </div>
+        <div id="mapBody" class="map-body"></div>
+        <details class="map-edges">
+          <summary>Where each connection is declared</summary>
+          <div id="mapEdgeList" class="map-edge-list"></div>
+        </details>
+      </section>
+
       <section id="intro" class="intro">
         <h2>Find where the logic lives, and how to run it.</h2>
         <p class="lede">
@@ -38,6 +50,17 @@
         <div class="starters">
           <p class="starters-title">Start with</p>
           <div id="starterList" class="starter-list"></div>
+          <div class="path-cta">
+            <button id="pathButton" class="starter primary" type="button">
+              Plan my first week ↦
+            </button>
+            <input
+              id="pathRole"
+              class="path-role"
+              placeholder="squad or role, optional — e.g. Payments squad"
+              autocomplete="off"
+            />
+          </div>
         </div>
       </section>
 

@@ -4,7 +4,16 @@ import express from "express";
 import { ROOT, loadRepos, loadUsers, findUser, allowedRepoIds } from "./config.mjs";
 import { buildIndex, loadIndex, redactSecrets } from "./indexer.mjs";
 import { prepare, search } from "./retriever.mjs";
-import { buildContext, streamAnswer, MODEL } from "./llm.mjs";
+import {
+  buildContext,
+  buildPathContext,
+  streamAnswer,
+  PATH_PROMPT,
+  MAX_TOKENS_LONG,
+  LLM_REASONING_EFFORT,
+  MODEL,
+} from "./llm.mjs";
+import { scopeGraph } from "./graph.mjs";
 import {
   readRepos,
   readUsers,
@@ -48,16 +57,20 @@ function scopeFor(userId) {
   const user = findUser(userId);
   const repoIds = allowedRepoIds(user, index.repos);
   const repos = repoIds.map((id) => ({ ...repoById.get(id), ...index.repos.find((r) => r.id === id) }));
-  return { user, repoIds, repos };
+  // Narrowed here, so an unauthorised service never reaches the browser or the
+  // model: it is absent from the diagram rather than hidden in it.
+  const graph = scopeGraph(index.graph, repoIds);
+  return { user, repoIds, repos, graph };
 }
 
 /* ----------------------------- API ----------------------------- */
 
 app.get("/api/context", (req, res) => {
-  const { user, repoIds, repos } = scopeFor(req.query.user);
+  const { user, repoIds, repos, graph } = scopeFor(req.query.user);
   res.json({
     model: MODEL,
     user,
+    graph,
     users: loadUsers().map(({ id, name, repos: r }) => ({ id, name, repoCount: r.length })),
     repos: repos.map((r) => ({
       id: r.id,
@@ -157,29 +170,18 @@ app.put("/api/admin/users", requireAdmin, (req, res) => {
   res.json({ ok: true, users: saveUsers(users) });
 });
 
-/** Streaming answer over Server-Sent Events. */
-app.post("/api/ask", async (req, res) => {
-  const { question, userId, history = [] } = req.body ?? {};
-  if (!question || typeof question !== "string") {
-    return res.status(400).json({ error: "question is required" });
-  }
-
-  const { user, repoIds, repos } = scopeFor(userId);
-  if (repoIds.length === 0) {
-    return res.status(403).json({ error: "no_authorised_repositories" });
-  }
-
-  const results = search(prepared, question, { allowedRepos: repoIds });
-  const setupFacts = Object.fromEntries(repoIds.map((id) => [id, index.setup[id]]));
-
+/** Open a Server-Sent Events response and return its writer. */
+function openStream(res) {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders?.();
+  return (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
 
-  const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-
-  send("sources", {
+/** The retrieved excerpts, trimmed to what the sources panel shows. */
+function sourcesPayload(repoIds, results) {
+  return {
     scope: repoIds,
     results: results.slice(0, 12).map(({ repo, path: filePath, startLine, endLine, score }) => ({
       repo,
@@ -188,19 +190,92 @@ app.post("/api/ask", async (req, res) => {
       endLine,
       score,
     })),
-  });
+  };
+}
+
+/** Streaming answer over Server-Sent Events. */
+app.post("/api/ask", async (req, res) => {
+  const { question, userId, history = [] } = req.body ?? {};
+  if (!question || typeof question !== "string") {
+    return res.status(400).json({ error: "question is required" });
+  }
+
+  const { user, repoIds, repos, graph } = scopeFor(userId);
+  if (repoIds.length === 0) {
+    return res.status(403).json({ error: "no_authorised_repositories" });
+  }
+
+  const results = search(prepared, question, { allowedRepos: repoIds });
+  const setupFacts = Object.fromEntries(repoIds.map((id) => [id, index.setup[id]]));
+
+  const send = openStream(res);
+  send("sources", sourcesPayload(repoIds, results));
 
   try {
-    const context = buildContext({ question, results, setupFacts, repos, user });
-    await streamAnswer({
+    const context = buildContext({ question, results, setupFacts, repos, user, graph });
+    const { truncated } = await streamAnswer({
       context,
       history: history.slice(-6),
       onText: (text) => send("delta", { text }),
     });
-    send("done", { ok: true });
+    send("done", { ok: true, truncated });
   } catch (error) {
     console.error("ask failed:", error);
     send("error", { message: error?.message ?? "The assistant could not answer that." });
+  }
+  res.end();
+});
+
+/**
+ * Onboarding path: an ordered first-week reading route through the services the
+ * user can read. The order comes from the service graph, not from the model.
+ */
+app.post("/api/path", async (req, res) => {
+  const { role, userId } = req.body ?? {};
+  const { user, repoIds, repos, graph } = scopeFor(userId);
+  if (repoIds.length === 0) {
+    return res.status(403).json({ error: "no_authorised_repositories" });
+  }
+
+  // Retrieval is steered at the material a reading path is built from: entry
+  // points, architecture docs and setup instructions. The doc boost in
+  // retriever.mjs already favours READMEs and docs/ for this kind of query.
+  const seed = [
+    "architecture overview entry point request flow",
+    "readme local setup run tests",
+    graph.order.join(" "),
+    graph.services.flatMap((s) => s.endpoints.map((e) => e.path)).join(" "),
+    typeof role === "string" ? role : "",
+  ].join(" ");
+
+  const results = search(prepared, seed, { allowedRepos: repoIds, limit: 30, perRepoFloor: 8 });
+  const setupFacts = Object.fromEntries(repoIds.map((id) => [id, index.setup[id]]));
+
+  const send = openStream(res);
+  send("sources", { ...sourcesPayload(repoIds, results), order: graph.order });
+
+  try {
+    const context = buildPathContext({
+      role: typeof role === "string" ? role : "",
+      results,
+      setupFacts,
+      repos,
+      user,
+      graph,
+    });
+    // A first-week path covers every service in scope, so it needs far more
+    // output budget than a single answer: see MAX_TOKENS_LONG in llm.mjs.
+    const { truncated } = await streamAnswer({
+      system: PATH_PROMPT,
+      context,
+      maxTokens: MAX_TOKENS_LONG,
+      reasoningEffort: LLM_REASONING_EFFORT,
+      onText: (text) => send("delta", { text }),
+    });
+    send("done", { ok: true, truncated });
+  } catch (error) {
+    console.error("path failed:", error);
+    send("error", { message: error?.message ?? "The assistant could not build a path." });
   }
   res.end();
 });

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ROOT, INDEX_PATH, loadRepos } from "./config.mjs";
 import { resolveRepoPath } from "./admin-store.mjs";
+import { buildGraph } from "./graph.mjs";
 import { extractSetupFacts } from "./setup-extractor.mjs";
 
 /* ------------------------------------------------------------------ *
@@ -208,6 +209,10 @@ export function buildIndex({ quiet = false } = {}) {
       console.log(`  ${repo.id.padEnd(32)} ${String(fileCount).padStart(3)} files${masked}`);
     }
   }
+
+  // Derived from the finished chunks, so the graph inherits the secrets policy:
+  // an excluded file has no chunk and therefore cannot contribute an edge.
+  index.graph = buildGraph(index);
 
   fs.mkdirSync(path.dirname(INDEX_PATH), { recursive: true });
   fs.writeFileSync(INDEX_PATH, JSON.stringify(index));
