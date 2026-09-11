@@ -24,9 +24,9 @@ missing.
 
 ## The demo path
 
-1. Open `http://localhost:3000`. The first screen shows the three pilot repos,
-   the current user's access scope, and the PRD's key question as the first
-   starter prompt.
+1. Open `http://localhost:3000`. The first screen shows how the three services
+   call each other, the pilot repos, the current user's access scope, and the
+   PRD's key question as the first starter prompt.
 2. Click **"Where does transaction validation logic live across our services,
    and how do I run the service locally?"**
 3. The answer streams in four sections: *Summary* (how the gateway, the
@@ -35,9 +35,12 @@ missing.
    buttons), *Next steps*.
 4. Click any citation chip, for example `transaction-validation-service/app/engine.py:70-78`,
    to open the file at that line, with a link out to the repository.
-5. Switch the user in the top right to *Devi (contractor)* and ask the same
+5. Click **"Plan my first week"** for an ordered reading path through the
+   services, entry point first, every step citing real files and the commands
+   to run them.
+6. Switch the user in the top right to *Devi (contractor)* and ask the same
    question. The answer is built only from the two repositories that user can
-   read, and says so.
+   read, and says so — and the diagram loses the service they cannot read.
 
 ## Admin dashboard
 
@@ -62,6 +65,49 @@ The dashboard is unauthenticated for local use. Set `ADMIN_TOKEN` in `.env` to
 require an `x-admin-token` header on every admin call before exposing the
 server beyond localhost.
 
+## The architecture map
+
+The panel at the top of the assistant is not drawn by hand or written into a
+config file: it is extracted from the repositories every time the index is
+built, by `src/graph.mjs`. Three independent signals, in order of strength:
+
+1. **Compose environment values** — `VALIDATION_SERVICE_URL:
+   "http://transaction-validation-service:8081"` names the target service
+   outright, because the compose hostname *is* the repository id.
+2. **URL literals in code** — `"http://localhost:8081"` in a client class,
+   resolved through a port map built from each repo's own `ports:` and `PORT`.
+3. **Endpoint paths** — the `/v1/validate` in ``fetch(`${this.baseUrl}/v1/validate`)``
+   becomes the arrow's label.
+
+Route declarations are read too, in all three frameworks the pilots use
+(`mux.HandleFunc`, FastAPI decorators, Express mounts), so each service shows
+what it serves. Docs are deliberately excluded when looking for outbound calls:
+a README saying "called by api-gateway on POST /v1/validate" describes an
+inbound route, and reading it as a call would label the edge backwards.
+
+Every node and edge carries a `file:line` citation, so clicking an arrow — or a
+row under *Where each connection is declared* — opens the exact line the
+connection was inferred from. Nothing is guessed: a call path that cannot be
+attributed to one target is dropped rather than assigned, because a wrong label
+is worse than a missing one.
+
+The graph is filtered by access before it reaches the browser or the model, so
+switching to a user with narrower permissions removes those services from the
+diagram entirely rather than grey them out.
+
+## Plan my first week
+
+`Plan my first week` produces an ordered reading path instead of an answer to a
+question. The **order is not the model's choice**: it is the topological order
+of the service graph — entry point first, then what it calls — handed to the
+model as `READING ORDER`, which it is forbidden to reorder. The model supplies
+the rationale, the specific files to read, and the commands to get each service
+running, all cited. It closes with what the repositories genuinely cannot
+answer, rather than inventing ownership or deploy details.
+
+Both modes share one set of ground rules (`GROUND_RULES` in `src/llm.mjs`) so
+the grounding guarantee cannot drift between them.
+
 ## What is in the box
 
 | Path | Purpose |
@@ -70,8 +116,9 @@ server beyond localhost.
 | `src/indexer.mjs` | Static indexing, secrets policy, line-accurate chunking |
 | `src/setup-extractor.mjs` | Pulls setup facts from README blocks, Makefile targets, package scripts, docker-compose, runtime manifests, `.env.example` keys |
 | `src/retriever.mjs` | Dependency-free BM25-style keyword search with code-aware boosts |
+| `src/graph.mjs` | Cross-service graph: nodes, calls, reading order, all with citations |
 | `src/llm.mjs` | Model call: system prompt, context assembly, streaming |
-| `src/server.mjs` | Express API: `/api/context`, `/api/ask` (SSE), `/api/file`, `/api/reindex` |
+| `src/server.mjs` | Express API: `/api/context`, `/api/ask` and `/api/path` (SSE), `/api/file`, `/api/reindex` |
 | `public/` | Single-screen UI: composer, streaming answer, citation chips, file viewer |
 | `public/admin.html` | Admin dashboard: configure projects and people |
 | `src/admin-store.mjs` | Validates and writes the two configuration files |
@@ -95,6 +142,16 @@ is missing instead.
 themselves (README fences under setup/run/test headings, `##`-documented Make
 targets, npm scripts, compose services and ports, `engines.node` /
 `requires-python` / `go` directives, and `.env.example` *keys* only).
+
+**Output budget.** The default model is a reasoning model: it streams its
+thinking in a separate `reasoning_content` field, and that spends the same
+`max_tokens` budget as the answer. Left at a small budget it will use the whole
+allowance thinking and stop mid-sentence, so `src/llm.mjs` asks for
+`reasoning_effort: low` and a generous ceiling — measured, that produced a
+*more* complete answer than a larger budget with unconstrained reasoning, and
+faster. A truncated answer is reported as such rather than presented as
+finished. Set `LLM_REASONING_EFFORT=` (empty) for a provider that rejects the
+field.
 
 **Model.** The same provider and key as the other course projects: OpenCode Go,
 an OpenAI-compatible endpoint. `LLM_BASE_URL` (`https://opencode.ai/zen/go/v1`)
