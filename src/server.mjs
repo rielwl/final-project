@@ -8,10 +8,10 @@ import {
   buildContext,
   buildPathContext,
   streamAnswer,
+  currentModel,
   PATH_PROMPT,
   MAX_TOKENS_LONG,
   LLM_REASONING_EFFORT,
-  MODEL,
 } from "./llm.mjs";
 import { scopeGraph } from "./graph.mjs";
 import {
@@ -70,7 +70,7 @@ function scopeFor(userId) {
 app.get("/api/context", (req, res) => {
   const { user, repoIds, repos, graph } = scopeFor(req.query.user);
   res.json({
-    model: MODEL,
+    model: currentModel(),
     user,
     graph,
     users: loadUsers().map(({ id, name, repos: r }) => ({ id, name, repoCount: r.length })),
@@ -102,8 +102,12 @@ app.post("/api/reindex", (_req, res) => {
 /**
  * The dashboard edits config/repos.json and config/users.json. It is
  * unauthenticated unless ADMIN_TOKEN is set in .env, in which case every admin
- * call must send it as `x-admin-token`. The assistant binds to localhost, so an
- * unset token means "trusted local operator", which is what a v1 demo wants.
+ * call must send it as `x-admin-token`.
+ *
+ * Note that app.listen() below binds every interface, not just loopback, so an
+ * unset token means anyone who can reach this port can repoint the index at any
+ * directory this process can read. That is accepted for a local MVP; bind to
+ * 127.0.0.1 or set ADMIN_TOKEN before running it anywhere shared.
  */
 function requireAdmin(req, res, next) {
   const expected = process.env.ADMIN_TOKEN;
@@ -212,6 +216,23 @@ app.post("/api/ask", async (req, res) => {
 
   const send = openStream(res);
   send("sources", sourcesPayload(repoIds, results));
+
+  // Nothing matched: say so instead of paying for a call whose repository
+  // context is empty, which the model would answer by improvising.
+  if (results.length === 0) {
+    send("delta", {
+      text: [
+        "## Summary",
+        `Nothing in the repositories you can read (${repoIds.join(", ")}) matches that question.`,
+        "",
+        "Try naming a service, a file, or a term that appears in the code - for example",
+        "\"transaction validation\", \"idempotency\", or \"docker compose\". If you expected a",
+        "match, the repository may not be indexed yet: check the admin dashboard.",
+      ].join("\n"),
+    });
+    send("done", { ok: true, empty: true });
+    return res.end();
+  }
 
   try {
     const context = buildContext({ question, results, setupFacts, repos, user, graph });

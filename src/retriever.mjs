@@ -6,10 +6,12 @@
  * index, needs no second service to demo.
  */
 
+// "run", "test", "start" and friends are intent-bearing in a tool whose whole
+// job is "where does this live and how do I run it" - they stay searchable.
 const STOPWORDS = new Set([
   "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "is", "are",
   "how", "do", "i", "we", "our", "does", "where", "what", "which", "it", "this",
-  "that", "with", "can", "run", "my", "me", "you", "be", "at", "as", "from",
+  "that", "with", "can", "my", "me", "you", "be", "at", "as", "from",
 ]);
 
 const K1 = 1.5;
@@ -101,21 +103,45 @@ export function search(prepared, question, { allowedRepos, limit = 26, perRepoFl
 
   const picked = [];
   const seenPerRepo = new Map();
-  const takeFrom = (list, cap) => {
-    for (const entry of list) {
-      if (picked.length >= limit) break;
-      const used = seenPerRepo.get(entry.chunk.repo) ?? 0;
-      if (used >= cap) continue;
-      if (picked.some((p) => p.chunk.id === entry.chunk.id)) continue;
-      picked.push(entry);
-      seenPerRepo.set(entry.chunk.repo, used + 1);
-    }
+
+  // Adjacent windows of the same file overlap by design, so identity is not
+  // enough: two different chunks can carry the same lines into the prompt.
+  const alreadyCovered = (chunk) =>
+    picked.some(
+      (p) =>
+        p.chunk.repo === chunk.repo &&
+        p.chunk.path === chunk.path &&
+        p.chunk.startLine <= chunk.endLine &&
+        chunk.startLine <= p.chunk.endLine,
+    );
+
+  const take = (entry, cap) => {
+    if (picked.length >= limit) return false;
+    const used = seenPerRepo.get(entry.chunk.repo) ?? 0;
+    if (used >= cap) return false;
+    if (alreadyCovered(entry.chunk)) return false;
+    picked.push(entry);
+    seenPerRepo.set(entry.chunk.repo, used + 1);
+    return true;
   };
 
-  // Pass 1: a floor of results per repo. Pass 2: fill the rest by raw score.
-  takeFrom(scored, perRepoFloor);
-  seenPerRepo.clear();
-  takeFrom(scored, limit);
+  // Pass 1 hands every permitted repo its floor before the global limit can be
+  // reached, so the last repos in the list are not starved. The floor shrinks
+  // when there are more repos than the limit can seat.
+  const repoCount = Math.max(allowed.size, 1);
+  const floor = Math.max(1, Math.min(perRepoFloor, Math.floor(limit / repoCount)));
+  for (const repoId of allowed) {
+    for (const entry of scored) {
+      if (entry.chunk.repo !== repoId) continue;
+      if ((seenPerRepo.get(repoId) ?? 0) >= floor) break;
+      take(entry, floor);
+    }
+  }
+
+  // Pass 2 fills the remainder by raw score, keeping pass 1's allocations and
+  // capping any single repo so one wordy repository cannot take every slot.
+  const cap = Math.max(floor, Math.ceil(limit * 0.5));
+  for (const entry of scored) take(entry, cap);
 
   return picked.map(({ chunk, score }) => ({
     repo: chunk.repo,

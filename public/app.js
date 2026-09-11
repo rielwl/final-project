@@ -84,8 +84,10 @@ function renderMarkdown(markdown) {
   };
 
   for (const line of lines) {
-    const fenceMatch = /^```(\w*)\s*$/.exec(line);
-    if (fenceMatch) {
+    // Any info string opens or closes a fence. Matching only [A-Za-z0-9_]
+    // silently dropped ```docker-compose and ```bash title="x", which broke
+    // the copy-ready command blocks.
+    if (line.trimEnd().startsWith('```')) {
       if (fence === null) {
         closeList();
         fence = [];
@@ -490,12 +492,14 @@ async function run({ label, endpoint, body, remember, status }) {
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
 
-      const frames = buffer.split("\n\n");
+      // Frames may be LF- or CRLF-separated depending on what sits between
+      // the server and the browser.
+      const frames = buffer.split(/\r?\n\r?\n/);
       buffer = frames.pop() ?? "";
 
       for (const frame of frames) {
-        const eventLine = /^event: (.+)$/m.exec(frame);
-        const dataLine = /^data: (.+)$/m.exec(frame);
+        const eventLine = /^event:[ \t]*(.+?)[ \t\r]*$/m.exec(frame);
+        const dataLine = /^data:[ \t]*(.+?)[ \t\r]*$/m.exec(frame);
         if (!eventLine || !dataLine) continue;
         const payload = JSON.parse(dataLine[1]);
 
